@@ -4,6 +4,12 @@ import torch.optim as optim
 from torchvision import models, transforms, datasets
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from torchmetrics.classification import MulticlassConfusionMatrix
+from torchmetrics.classification import MulticlassF1Score
+from torchmetrics.classification import BinaryROC, BinaryAUROC
+from torchmetrics.classification import MulticlassPrecision, MulticlassRecall
+import matplotlib.pyplot as plt
+
 
 # -----------------------------
 # 1. Hyperparameters
@@ -115,10 +121,18 @@ print("Model saved.")
 # -----------------------------
 # 9. Test evaluation
 # -----------------------------
+num_classes = 2
+metric =  MulticlassConfusionMatrix(num_classes=num_classes)
+f1 = MulticlassF1Score(num_classes=num_classes)
+
+precision = MulticlassPrecision(num_classes=num_classes, average="macro")
+recall = MulticlassRecall(num_classes=num_classes, average="macro")
 
 model.eval()
 correct = 0
 total = 0
+roc = BinaryROC()
+auroc = BinaryAUROC()
 
 with torch.no_grad():
     for images, labels in test_loader:
@@ -127,6 +141,16 @@ with torch.no_grad():
         _, predicted = torch.max(outputs, 1)
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
+        metric.update(predicted, labels)
+        f1.update(predicted, labels)
+        precision.update(predicted, labels)
+        recall.update(predicted, labels)
 
+cm = metric.compute()
+print(cm)
+score = f1.compute()
+print("F1:", score)
+print("Precision:", precision.compute())
+print("Recall:", recall.compute())
 test_accuracy = correct / total
 print(f"Test Accuracy: {test_accuracy:.4f}")
