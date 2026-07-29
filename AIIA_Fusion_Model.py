@@ -8,7 +8,47 @@ import os
 import jpegio as jio
 import png
 import pandas as pd
+import gradio as gr
 
+def run_fusion(image_path):
+    
+    # Pixel model
+    pil_img = Image.open(image_path)
+    preprocess = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    image_tensor = preprocess(pil_img).unsqueeze(0)
+    state_dict = torch.load("efficientnet_ai_vs_real.pth", map_location="cpu")
+    pixel_model = EfficientNetModel()
+    pixel_model.load_state_dict(state_dict)
+    pixel_model.eval()
+    pixel_prob = pixel_model(image_tensor)
+
+    with torch.no_grad():
+        outputs = pixel_model(image_tensor)
+        pixel_prob = torch.softmax(outputs, dim=1)[0,1].item()
+
+    # Metadata model
+    meta_features_dict = extract_metadata_features(pil_img, image_path)
+    meta_features = pd.DataFrame([meta_features_dict])
+    # Load metadata model (RandomForest)
+    meta_model = load("metadata_forensic_model.joblib")
+    categorical_cols = ["mode", "icc_present", "has_iCCP", "has_tEXt"]
+
+    for col in categorical_cols:
+        meta_features[col] = meta_features[col].astype(str)
+    
+    meta_prob = meta_model.predict_proba(meta_features)[0,1]
+    fusion_prob = 0.7 * pixel_prob + 0.3 * meta_prob
+    label = "Real" if fusion_prob >= 0.5 else "AI-generated"
+
+    return label
+    
 def extract_metadata_features(img, image_path):
     ext = os.path.splitext(image_path)[1].lower()
     img = Image.open(image_path)
@@ -24,13 +64,11 @@ def extract_metadata_features(img, image_path):
         "mode": img.mode,
         "icc_present": "icc_profile" in img.info,
     }
-    print(type("icc_profile" in img.info))
     # JPEG metadata
     if ext in [".jpg", ".jpeg"]:
         jpeg = jio.read(image_path)
         qtables = jpeg.quant_tables
         metadata["num_qtables"] = len(qtables)
-        print("Test")
         if len(qtables) > 0:
             metadata["has_iCCP"]= 0
             metadata["has_tEXt"]= 0
@@ -69,47 +107,11 @@ class EfficientNetModel(nn.Module):
         x = self.classifier(x)
         return x
 
-preprocess = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
-    )
-])
 
-img = Image.open("./20260728_221253.jpg")
-image_tensor = preprocess(img).unsqueeze(0)   # add batch dimension
+ui = gr.Interface(
+    fn=run_fusion,
+    inputs=gr.Image(type="filepath"),
+    outputs="text"
+)
 
-state_dict = torch.load("efficientnet_ai_vs_real.pth", map_location="cpu")
-pixel_model = EfficientNetModel()
-pixel_model.load_state_dict(state_dict)
-pixel_model.eval()
-
-# Load metadata model (RandomForest)
-meta_model = load("metadata_forensic_model.joblib")
-
-with torch.no_grad():
-    outputs = pixel_model(image_tensor)
-    pixel_prob = torch.softmax(outputs, dim=1)[0,1].item()
-
-meta_features_dict = extract_metadata_features(img, "./20260728_221253.jpg")
-
-meta_features = pd.DataFrame([meta_features_dict])
-categorical_cols = ["mode", "icc_present", "has_iCCP", "has_tEXt"]
-
-for col in categorical_cols:
-    meta_features[col] = meta_features[col].astype(str)
-    
-meta_prob = meta_model.predict_proba(meta_features)[0,1]
-
-w_pixel = 0.7
-w_meta = 0.3
-
-fusion_prob = (w_pixel * pixel_prob) + (w_meta * meta_prob)
-print("Classifier: "+str(pixel_prob))
-print("Forensic: "+str(meta_prob))
-print("Fusion: " +str(fusion_prob))
-label = "real" if fusion_prob >= 0.5 else "ai"
-
-print(label)
+ui.launch()
