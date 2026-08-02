@@ -1,9 +1,3 @@
-from PIL import Image
-import numpy as np
-import piexif
-import jpegio as jio  # JPEG quantization tables
-import os
-import png
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
@@ -13,70 +7,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 from sklearn.metrics import precision_score, recall_score
 from joblib import dump
-
-def get_generic_metadata(path):
-    img = Image.open(path)
-    width, height = img.size
-    file_size = os.path.getsize(path)
-
-    bytes_per_pixel = file_size / (width * height)
-
-    metadata = {
-        "width": width,
-        "height": height,
-        "bytes_per_pixel": bytes_per_pixel,
-        "mode": img.mode,
-        "icc_present": "icc_profile" in img.info,
-    }
-    return metadata
-
-def get_jpeg_metadata(path):
-    jpeg = jio.read(path)
-    qtables = jpeg.quant_tables  # list of arrays
-    metadata = {
-        "num_qtables": len(qtables),
-        "qt_mean_0": qtables[0].mean() if len(qtables) > 0 else 0,
-        "qt_std_0": qtables[0].std() if len(qtables) > 0 else 0,
-    }
-    metadata["has_iCCP"]= 0
-    metadata["has_tEXt"]= 0
-    metadata["num_chunks"]= 0
-    return metadata
-
-def get_png_metadata(path):
-    reader = png.Reader(filename=path)
-    chunks = list(reader.chunks())
-
-    chunk_types = [ct.decode("ascii") if isinstance(ct, bytes) else ct
-                   for ct, _ in chunks]
-
-    metadata = {
-        "num_chunks": len(chunks),
-        "has_iCCP": "iCCP" in chunk_types,
-        "has_tEXt": "tEXt" in chunk_types,
-    }
-    return metadata
-
-def get_images_metadata(folder):
-    full_path = "./ai-dataset/"+folder+"/"
-    files = os.listdir(full_path)
-    print(len(files))
-    metadata_rows = []
-    for image_name in files:
-        image_path = full_path+image_name
-        metadata = get_generic_metadata(image_path)
-        metadata["filename"] = image_name
-        metadata["label"] = folder
-        if image_path.endswith(".jpg") or image_path.endswith(".jpeg"):
-           metadata.update(get_jpeg_metadata(image_path))
-        elif image_path.endswith(".png"):
-           metadata.update(get_png_metadata(image_path))
-        metadata_rows.append(metadata)
-    return metadata_rows
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
+import AIIA_Common as aiia_com
 
 metadata_master_rows = []
-metadata_master_rows = get_images_metadata("real")
-metadata_master_rows.extend(get_images_metadata("ai"))
+metadata_master_rows = aiia_com.get_images_metadata("real")
+metadata_master_rows.extend(aiia_com.get_images_metadata("ai"))
 
 df = pd.DataFrame(metadata_master_rows)
 
@@ -114,5 +51,27 @@ recall = recall_score(y_val, y_pred, average="macro")
 
 print("Precision:", precision)
 print("Recall:", recall)
+# Convert string labels to numeric
+y_val_numeric = (y_val == "ai").astype(int)
+y_pred_numeric = (y_pred == "ai").astype(int)
+# Compute ROC curve
+fpr, tpr, thresholds = roc_curve(y_val_numeric, y_pred_numeric)
+
+# Compute AUC
+roc_auc = auc(fpr, tpr)
+
+plt.figure(figsize=(8, 6))
+plt.plot(fpr, tpr, color='darkorange', lw=2,
+         label=f'Random Forest ROC curve (AUC = {roc_auc:.2f})')
+
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve – Metadata Random Forest Classifier')
+plt.legend(loc="lower right")
+plt.savefig("roc_curve_metadata.png", dpi=300, bbox_inches='tight')
 
 dump(clf, "metadata_forensic_model.joblib")

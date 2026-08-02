@@ -1,14 +1,11 @@
 import torch
 from joblib import load
-import numpy as np
 import torch.nn as nn
 from torchvision import models, transforms 
-from PIL import Image
-import os
-import jpegio as jio
-import png
 import pandas as pd
 import gradio as gr
+from PIL import Image
+import AIIA_Common as aiia_com
 
 def run_fusion(image_path):
     
@@ -24,17 +21,16 @@ def run_fusion(image_path):
     ])
     image_tensor = preprocess(pil_img).unsqueeze(0)
     state_dict = torch.load("efficientnet_ai_vs_real.pth", map_location="cpu")
-    pixel_model = EfficientNetModel()
+    pixel_model =  EfficientNetModel()
     pixel_model.load_state_dict(state_dict)
     pixel_model.eval()
-    pixel_prob = pixel_model(image_tensor)
 
     with torch.no_grad():
         outputs = pixel_model(image_tensor)
         pixel_prob = torch.softmax(outputs, dim=1)[0,1].item()
 
     # Metadata model
-    meta_features_dict = extract_metadata_features(pil_img, image_path)
+    meta_features_dict = aiia_com.extract_metadata_features(image_path)
     meta_features = pd.DataFrame([meta_features_dict])
     # Load metadata model (RandomForest)
     meta_model = load("metadata_forensic_model.joblib")
@@ -49,51 +45,10 @@ def run_fusion(image_path):
 
     return label
     
-def extract_metadata_features(img, image_path):
-    ext = os.path.splitext(image_path)[1].lower()
-    img = Image.open(image_path)
-
-    width, height = img.size
-    file_size = os.path.getsize(image_path)
-    bytes_per_pixel = file_size / (width * height)
-
-    metadata = {
-        "width": width,
-        "height": height,
-        "bytes_per_pixel": bytes_per_pixel,
-        "mode": img.mode,
-        "icc_present": "icc_profile" in img.info,
-    }
-    # JPEG metadata
-    if ext in [".jpg", ".jpeg"]:
-        jpeg = jio.read(image_path)
-        qtables = jpeg.quant_tables
-        metadata["num_qtables"] = len(qtables)
-        if len(qtables) > 0:
-            metadata["has_iCCP"]= 0
-            metadata["has_tEXt"]= 0
-            metadata["num_chunks"]= 0
-            metadata["qt_mean_0"] = qtables[0].mean() if len(qtables) > 0 else 0
-            metadata["qt_std_0"] = qtables[0].std() if len(qtables) > 0 else 0
-
-    # PNG metadata
-    if ext == ".png":
-        reader = png.Reader(filename=image_path)
-        chunks = list(reader.chunks())
-        chunk_types = [ct.decode("ascii") if isinstance(ct, bytes) else ct for ct, _ in chunks]
-        metadata["num_chunks"] = len(chunks)
-        metadata["has_iCCP"] = int("iCCP" in chunk_types)
-        metadata["has_tEXt"] = int("tEXt" in chunk_types)
-        metadata["qt_std_0"] = 0
-        metadata["qt_mean_0"] = 0
-        metadata["num_qtables"] = 0
-
-    return metadata
-
 class EfficientNetModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.features = models.efficientnet_b0(weights=None).features
+        self.features = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT).features
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.classifier = nn.Sequential(
             nn.Dropout(0.2),
